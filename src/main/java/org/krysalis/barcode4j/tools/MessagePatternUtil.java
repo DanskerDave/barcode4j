@@ -1,5 +1,5 @@
 /*
- * Copyright 2007 Dimitar Vlasev
+ * Copyright 2020 DaveLaw, https://github.com/DanskerDave
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,136 +14,171 @@
  * limitations under the License.
  */
 
-/* $Id: MessagePatternUtil.java,v 1.3 2008-11-29 16:26:52 jmaerki Exp $ */
-
 package org.krysalis.barcode4j.tools;
 
+import java.util.LinkedList;
+import java.util.Queue;
+
 /**
- * Helper class to apply custom message pattern (i.e. message characters grouping) to barcode
- * messages.
- * @author Dimitar Vlasev
- * @version $Id: MessagePatternUtil.java,v 1.3 2008-11-29 16:26:52 jmaerki Exp $
+ * Helper class to apply a custom message pattern (i.e. message-character grouping) to a barcode.<br>
+ * <br>
+ * Based on an original, published by Jeremias Märki &amp; Dietmar Bürkle.
+ * The original processed Strings byte-by-byte &amp; did not work correctly with Unicode.
+ * (for example, the European Currency Symbol, otherwise known as "Euro", was handled incorrectly)
+ * This version uses the same public API as the original,
+ * but has been completely rewritten to work with Unicode Charsets.<br>
+ * <br>
+ * Apart from the Unicode support, there are 3 differences:<br>
+ * - a Pattern Character ('!') was added to ignore the reminder of the message<br>
+ * - '?' is substituted for missing (ESCAPE'd) Pattern-Characters<br>
+ * - '?' is substituted for missing (PLACEHOLDER'ed) Message-Characters<br>
+ * 
+ * @author DaveLaw
  */
 public class MessagePatternUtil {
 
-    /**
-     * Defined means to apply custom message pattern (i.e. message characters grouping).
-     * If either the message or the pattern are null or empty the "msg" pattern will simply be
-     * returned.
-     * <p>
-     * Example: "\_patterned\_:__/__/____" (Any '_' is placeholder for the next message symbol,
-     * all other pattern symbols will be inserted between. The '\' is escape char. If the patterned
-     * message is too long you can increase the quite zone length to make it visible)
-     * @param msg the original message
-     * @param pattern the message pattern to be applied
-     * @return the formatted message
-     * @author Dimitar Vlasev
-     */
-    public static String applyCustomMessagePattern(String msg, String pattern) {
+	/**
+	 * A simplistic wrapper for Unicode.<br>
+	 * High-Low Surrogate-Pairs will be stored together.<br>
+	 * All other Characters are stored as a single char.
+	 */
+	private static final class SimpleUnicode {
 
-        StringBuffer result = new StringBuffer();
+		private final char[] chars;
 
-        // if there is no pattern then return the original message
-        if ((pattern == null) || "".equals(pattern)
-                || msg == null || "".equals(msg)) {
-            return msg;
-        }
+		public SimpleUnicode(final char... chars) {
+			this.chars  = chars;
+		}
+		/**
+		 * Parses a
+		 * {@link String}
+		 * to a
+		 * {@link Queue}
+		 * of
+		 * {@link SimpleUnicode}.
+		 * 
+		 * @param string
+		 * @return
+		 */
+		public static Queue<SimpleUnicode> parse(final String string) {
 
-        byte[] msgBytes, patternBytes;
-        msgBytes = msg.getBytes();
-        patternBytes = pattern.getBytes();
+			final Queue<SimpleUnicode> charQueue = new LinkedList<>();
 
-        int msgIndex = 0;
-        char currentPatternChar;
-        boolean escapeCharEncountered = false;
+			final char[]               chars     = string.toCharArray();
 
-        // iterate trough pattern chars
-        boolean msgFinished = false;
-        for (int patternIndex = 0; patternIndex < patternBytes.length; patternIndex++) {
+			for (int hix = 0; hix < chars.length; hix++) {
 
-            currentPatternChar = (char) patternBytes[patternIndex];
+				final int  lox  = hix + 1;
+				final char high = chars[hix];
 
-            // if the currentPatternChar is escape character and the
-            // escapeCharEncountered flag is down
-            // set the escapeCharEncountered flag up and continue to the next
-            // pattern symbol
-            if ((!escapeCharEncountered) && isEscapeChar(currentPatternChar)) {
-                escapeCharEncountered = true;
-                continue;
-            }
+				if (lox >= chars.length
+				||  Character.isHighSurrogate(high) == false) {
+					charQueue.add(new SimpleUnicode(high));
+					continue;
+				}
 
-            // if the currentPatternChar is a placeholder and the
-            // escapeCharEncountered flag is down
-            // append the next message char to the result
-            // else
-            // append the currentPatternChar to the result and set the
-            // escapeCharEncountered flag down
-            if ((!msgFinished)
-                    && (!escapeCharEncountered)
-                    && (isPlaceholder(currentPatternChar) || isDeleteholder(currentPatternChar))) {
-                if (!isDeleteholder(currentPatternChar)) {
-                    result.append((char) msgBytes[msgIndex]);
-                }
-                msgIndex++;
-                if (msgIndex == msgBytes.length) {
-                    msgFinished = true;
-                }
-            } else {
-                if (escapeCharEncountered || !isPlaceholder(currentPatternChar)) {
-                    result.append(currentPatternChar);
-                }
-                escapeCharEncountered = false;
-            }
-        }
+				final char low  = chars[lox];
 
-        for (; msgIndex < msgBytes.length; msgIndex++) {
-            result.append((char) msgBytes[msgIndex]);
-        }
+				if (Character.isLowSurrogate(low)) {
+					System.out.println("Kanji.: " + high + low);
+					hix++;
+					charQueue.add(new SimpleUnicode(high, low));
+				} else {
+					charQueue.add(new SimpleUnicode(high));
+				}
+			}
+			return charQueue;
+		}
+	}
 
-        return result.toString();
-    }
+	/**
+	 * Escape-Character.: the next Unicode Character in the Pattern will be copied to the result.<br>
+	 * It will neither be evaluated as an {@code ESCAPE} nor as an {@code ACTION}.<br>
+	 * (if none is found {@link #QUESTION_MARK} will be inserted instead)
+	 */
+	public  static final char   ESCAPE                  = '\\';
 
-    /**
-     * Returns true if the imput character is placeholder
-     * @param c byte
-     * @return boolean
-     */
-    private static boolean isPlaceholder(char c) {
-      boolean result = false;
+	/**
+	 * Placeholder.: the next Unicode Character in the Message will be copied to the result.<br>
+	 * (if none is found {@link #QUESTION_MARK} will be inserted instead)
+	 */
+	public  static final char   ACTION_PLACEHOLDER      = '_';
 
-      char placeholderChar = '_';
+	/**
+	 * Delete.: the next Unicode Character in the Message will NOT be copied to the result.<br>
+	 */
+	public  static final char   ACTION_DELETE           = '#';
 
-      result = (placeholderChar == c);
+	/**
+	 * Delete Remainder.: the rest of the Message will NOT be copied to the result.<br>
+	 */
+	public  static final char   ACTION_DELETE_REMAINDER = '!';
 
-      return result;
-    }
+	/**
+	 * Replacement if no Unicode Character is available in the Message or Pattern respectively.<br>
+	 */
+	public  static final char[] QUESTION_MARK           = {'?'};
 
-    /**
-     * Returns true if the input parameter is escape character
-     * @param c char
-     * @return boolean
-     * @author Dimitar Vlasev
-     */
-    private static boolean isEscapeChar(char c) {
-        boolean result = false;
+	/**
+	 * Format a Unicode Message using the supplied Unicode Pattern.<br>
+	 * Characters in the Pattern are evaluated as follows:<br>
+	 * - {@link #ACTION_DELETE_REMAINDER DELETE_REMAINDER} : all remaining <i>Message</i> characters are ignored<br>
+	 * - {@link #ACTION_DELETE           DELETE}           : the next Unicode <i>Message</i> character is ignored<br>
+	 * - {@link #ACTION_PLACEHOLDER      PLACEHOLDER}      : the next Unicode <i>Message</i> character is copied to the result<br>
+	 * - {@link #ESCAPE}                                   : the next Unicode <i>Pattern</i> character is copied to the result<br>
+	 * - <b><i>all others</i></b>                          : this Unicode <i>Pattern</i> character is copied to the result<br>
+	 * <br>
+	 * It is only necessary to use {@link #ESCAPE} if one of the above {@code ACTION} characters is to be inserted in the result.<br>
+	 * <br>
+	 * After evaluation of the Pattern, the remaining Message characters will be appended to the result.<br>
+	 * If Message or Pattern are null or empty, Message will be returned as is.<br>
+	 * <br>
+	 * This Method should be able to handle Unicode (High-Low Surrogate-Pairs).<br>
+	 * <br>
+	 * If a character expected by the Pattern (either in the Message, or in the Pattern itself) is missing,
+	 * a {@link #QUESTION_MARK} will be substituted.
+	 * 
+	 * @param   msg      the original Message
+	 * @param   pattern  the Pattern to be applied to the Message
+	 * @return           the formatted result
+	 */
+	public static String applyCustomMessagePattern(final String msg, final String pattern) {
 
-        char escapeChar = '\\';
+		if (pattern == null || "".equals(pattern)
+		||  msg     == null || "".equals(msg)) {
+			return msg;
+		}
 
-        result = (c == escapeChar);
+		final StringBuilder        result       = new StringBuilder();
 
-        return result;
-    }
+		final Queue<SimpleUnicode> msgQueue     = SimpleUnicode.parse(msg);
+		final Queue<SimpleUnicode> patternQueue = SimpleUnicode.parse(pattern);
 
-    /**
-     * Returns true if the input character is deleteholder.
-     * @param c the input character
-     * @return true if the input character is a position to be deleted
-     */
-    private static boolean isDeleteholder(char c) {
-        boolean result = false;
-        char placeholderChar = '#';
-        result = (placeholderChar == c);
-        return result;
-    }
+		while (patternQueue.isEmpty() == false) {
 
+			final SimpleUnicode patternUnicode = patternQueue.remove();
+
+			switch             (patternUnicode.chars[0]) {
+				case ESCAPE                  :  poll(patternQueue, result);    break;
+				case ACTION_PLACEHOLDER      :  poll(msgQueue,     result);    break;
+				case ACTION_DELETE           :       msgQueue.poll();          break;
+				case ACTION_DELETE_REMAINDER :       msgQueue.clear();         break;
+
+				default                      :  result.append(patternUnicode.chars);
+			}
+		}
+		/*
+		 * Copy what's left of the Message to the result...
+		 */
+		msgQueue.forEach(msgUnicode -> result.append(msgUnicode.chars));
+ 
+		return result.toString();
+	}
+
+	private static void poll(final Queue<SimpleUnicode> queue, final StringBuilder result) {
+
+		final SimpleUnicode   nextUnicode  =  queue.poll();
+
+		result.append(null != nextUnicode  ?  nextUnicode.chars  :  QUESTION_MARK);
+	}
 }
